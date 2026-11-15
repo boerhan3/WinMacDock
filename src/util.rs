@@ -51,7 +51,13 @@ pub fn shell_open(target: &str) {
     let t = wide(target);
     let verb = wide("open");
     unsafe {
-        ShellExecuteW(None, PCWSTR(verb.as_ptr()), PCWSTR(t.as_ptr()), None, None, SW_SHOWNORMAL);
+        // The app we start (or an already-running instance it hands over to)
+        // may bring its window to the front even if we lose focus meanwhile.
+        let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(windows::Win32::UI::WindowsAndMessaging::ASFW_ANY);
+        let r = ShellExecuteW(None, PCWSTR(verb.as_ptr()), PCWSTR(t.as_ptr()), None, None, SW_SHOWNORMAL);
+        if r.0 as isize <= 32 {
+            log(&format!("open failed ({}): {target}", r.0 as isize));
+        }
     }
 }
 

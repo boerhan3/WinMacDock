@@ -630,6 +630,8 @@ impl Dock {
             Kind::Trash => shell_open("shell:RecycleBinFolder"),
             Kind::Sep => {}
             Kind::App => {
+                // The window list may be a moment old; a closed window can't be activated.
+                cx.tracker.refresh();
                 let wins: Vec<HWND> = cx.tracker.windows_of(&it.key).map(|w| w.hwnd).collect();
                 if wins.is_empty() {
                     shell_open(&it.launch);
@@ -637,7 +639,8 @@ impl Dock {
                         it.bounce = Some((Instant::now(), None));
                     }
                 } else {
-                    let fg = cx.tracker.fg;
+                    let live = unsafe { GetForegroundWindow() };
+                    let fg = if tracker::window_pid(live) == std::process::id() { cx.tracker.fg } else { live };
                     let front_is_ours = wins.contains(&fg) && unsafe { !IsIconic(fg).as_bool() };
                     if !front_is_ours {
                         // Like macOS: the app comes forward with all of its windows.

@@ -115,6 +115,21 @@ impl Tracker {
         }
     }
 
+    /// Windows of the running app that `launch` (a path or `shell:AppsFolder\<id>`) would start.
+    pub fn windows_for_launch(&self, launch: &str) -> Vec<HWND> {
+        let l = launch.to_lowercase();
+        let id = l.strip_prefix("shell:appsfolder\\");
+        self.wins
+            .iter()
+            .filter(|w| {
+                w.key.launch_target().eq_ignore_ascii_case(&l)
+                    || w.key.exe.as_deref() == Some(l.as_str())
+                    || matches!((id, w.key.aumid.as_deref()), (Some(a), Some(b)) if a == b)
+            })
+            .map(|w| w.hwnd)
+            .collect()
+    }
+
     pub fn windows_of<'a>(&'a self, key: &'a AppKey) -> impl Iterator<Item = &'a Win> {
         self.wins.iter().filter(move |w| w.key.matches(key))
     }
@@ -185,10 +200,56 @@ fn window_key(h: HWND) -> AppKey {
 /// Bring a window to the front, restoring it if minimized.
 pub fn activate(h: HWND) {
     unsafe {
+        if !IsWindow(Some(h)).as_bool() {
+            return;
+        }
         if IsIconic(h).as_bool() {
             let _ = ShowWindow(h, SW_RESTORE);
         }
+        if !force_foreground(h) {
+            crate::util::log("activate: Windows refused to bring the window to the front");
+        }
+    }
+}
+
+fn is_front(h: HWND) -> bool {
+    unsafe {
+        let fg = GetForegroundWindow();
+        fg == h || GetAncestor(fg, GA_ROOTOWNER) == h
+    }
+}
+
+/// Windows only lets the process the user last interacted with change the
+/// foreground window. The Dock never takes focus, so a plain
+/// SetForegroundWindow is sometimes refused and the old window stays in
+/// front. Try the plain call, then share input state with the thread that
+/// owns the foreground, then a harmless key event (which counts as our input).
+unsafe fn force_foreground(h: HWND) -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::*;
+    unsafe {
+        if SetForegroundWindow(h).as_bool() && is_front(h) {
+            return true;
+        }
+        let me = GetCurrentThreadId();
+        let fg = GetForegroundWindow();
+        let other = if fg.is_invalid() { 0 } else { GetWindowThreadProcessId(fg, None) };
+        let attached = other != 0 && other != me && AttachThreadInput(me, other, true).as_bool();
+        let _ = BringWindowToTop(h);
         let _ = SetForegroundWindow(h);
+        if attached {
+            let _ = AttachThreadInput(me, other, false);
+        }
+        if is_front(h) {
+            return true;
+        }
+        // 0xE8 is an unassigned virtual key: no app reacts to it.
+        let key = |flags| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VIRTUAL_KEY(0xE8), wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 } },
+        };
+        SendInput(&[key(KEYBD_EVENT_FLAGS(0)), key(KEYEVENTF_KEYUP)], std::mem::size_of::<INPUT>() as i32);
+        let _ = SetForegroundWindow(h);
+        is_front(h)
     }
 }
 

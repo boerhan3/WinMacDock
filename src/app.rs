@@ -850,7 +850,16 @@ impl App {
             Cmd::OpenSettings => self.settings.show(&mut self.cx),
             Cmd::CloseSettings => self.settings.hide(),
             Cmd::ConfigChanged(sec) => self.apply_config(sec),
-            Cmd::Launch(target) => util::shell_open(&target),
+            Cmd::Launch(target) => {
+                // Like macOS: an app that is already running comes forward instead.
+                self.cx.tracker.refresh();
+                let wins = self.cx.tracker.windows_for_launch(&target);
+                if wins.is_empty() {
+                    util::shell_open(&target);
+                } else {
+                    tracker::bring_all_to_front(&wins);
+                }
+            }
             Cmd::Pin(launch) => {
                 self.dock.set_pinned(&mut self.cx, &launch, true);
                 self.dock.rebuild(&mut self.cx);
