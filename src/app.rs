@@ -647,7 +647,7 @@ impl App {
                 self.cx.tracker.refresh();
                 if self.cx.animate && self.cx.tracker.fg != prev_fg {
                     // A new window is in front: picture it for its minimize effect.
-                    minfx::prefetch(self.cx.tracker.fg, self.cx.s);
+                    minfx::prefetch(self.cx.tracker.fg, &[], self.cx.s);
                 }
                 taskbar::rehide();
                 if let Some(bar) = &mut self.menubar {
@@ -667,7 +667,9 @@ impl App {
             }
             WM_TIMER if wp.0 == TIMER_SNAP => {
                 if self.cx.animate {
-                    minfx::prefetch(self.cx.tracker.fg, self.cx.s);
+                    // The window in front, plus other visible windows whose picture is old.
+                    let others: Vec<HWND> = self.cx.tracker.wins.iter().map(|w| w.hwnd).take(8).collect();
+                    minfx::prefetch(self.cx.tracker.fg, &others, self.cx.s);
                 }
             }
             WM_DISPLAYCHANGE => unsafe {

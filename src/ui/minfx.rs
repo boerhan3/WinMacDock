@@ -160,7 +160,7 @@ impl MinFx {
                 return;
             }
         }
-        crate::util::log("minimize effect: no picture of the window, using the stepped fallback");
+        crate::util::log(&format!("minimize effect: no picture of \"{}\", using the stepped fallback", crate::win::tracker::title(target)));
         self.begin_thumbs(cx, target, from, dest);
     }
 
@@ -370,38 +370,96 @@ struct Snap {
     at: Instant,
 }
 
-static SNAP: std::sync::Mutex<Option<Snap>> = std::sync::Mutex::new(None);
+/// Pictures kept at most (the one in front at full size, others at half).
+const SNAP_KEEP: usize = 6;
+/// Pictures of windows that are not in front are retaken after this long.
+const SNAP_STALE_SECS: u64 = 15;
+
+static SNAPS: std::sync::Mutex<Vec<Snap>> = std::sync::Mutex::new(Vec::new());
+/// Windows waiting to be pictured: (hwnd, full size).
+static WANT: std::sync::Mutex<Vec<(isize, bool)>> = std::sync::Mutex::new(Vec::new());
 static SNAP_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Take a picture of `hwnd` on a worker thread (a few tens of ms, never on
-/// the UI thread), so that if it later minimizes by itself (Win+Down, its
-/// own button) the smooth effect can still be played.
-pub fn prefetch(hwnd: HWND, scale: f32) {
-    if hwnd.is_invalid() || crate::win::tracker::window_pid(hwnd) == std::process::id() {
+/// Take pictures of the window in front (`fg`) and of other visible app
+/// windows (`others`, topmost first) on a worker thread, never on the UI
+/// thread, so that a window that minimizes by itself (Win+Down, its own
+/// button) still gets the smooth effect, whichever window it is.
+pub fn prefetch(fg: HWND, others: &[HWND], scale: f32) {
+    use std::sync::atomic::Ordering;
+    let own = std::process::id();
+    let usable = |h: HWND| !h.is_invalid() && crate::win::tracker::window_pid(h) != own && unsafe { !IsIconic(h).as_bool() && IsWindowVisible(h).as_bool() };
+    let fresh = |h: HWND| SNAPS.lock().map(|s| s.iter().any(|x| x.hwnd == h.0 as isize && x.at.elapsed().as_secs() < SNAP_STALE_SECS)).unwrap_or(false);
+    let mut jobs = Vec::new();
+    if usable(fg) {
+        jobs.push((fg.0 as isize, true));
+    }
+    for &h in others.iter().filter(|&&h| h != fg).take(SNAP_KEEP - 1) {
+        if usable(h) && !fresh(h) {
+            jobs.push((h.0 as isize, false));
+        }
+    }
+    if jobs.is_empty() {
         return;
     }
-    if SNAP_BUSY.swap(true, std::sync::atomic::Ordering::AcqRel) {
-        return;
-    }
-    let h = hwnd.0 as isize;
-    std::thread::spawn(move || {
-        let hwnd = HWND(h as *mut _);
-        let ok = unsafe { !IsIconic(hwnd).as_bool() && IsWindowVisible(hwnd).as_bool() };
-        if ok {
-            if let Some((px, w, h2, frame)) = capture_pixels(hwnd, 8.0 * scale) {
-                if let Ok(mut s) = SNAP.lock() {
-                    *s = Some(Snap { hwnd: h, frame, w, h: h2, px, at: Instant::now() });
-                }
+    if let Ok(mut w) = WANT.lock() {
+        for j in jobs {
+            if !w.iter().any(|x| x.0 == j.0) {
+                w.push(j);
             }
         }
-        SNAP_BUSY.store(false, std::sync::atomic::Ordering::Release);
+    }
+    // A worker already running picks the new requests up.
+    if SNAP_BUSY.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    std::thread::spawn(move || loop {
+        let job = WANT.lock().ok().and_then(|mut w| if w.is_empty() { None } else { Some(w.remove(0)) });
+        let Some((h, full)) = job else {
+            SNAP_BUSY.store(false, Ordering::Release);
+            // A request may have arrived just before we cleared the flag.
+            let more = WANT.lock().map(|w| !w.is_empty()).unwrap_or(false);
+            if more && !SNAP_BUSY.swap(true, Ordering::AcqRel) {
+                continue;
+            }
+            break;
+        };
+        let hwnd = HWND(h as *mut _);
+        if unsafe { IsIconic(hwnd).as_bool() || !IsWindowVisible(hwnd).as_bool() } {
+            continue;
+        }
+        let Some((mut px, mut w, mut h2, frame)) = capture_pixels(hwnd, 8.0 * scale) else { continue };
+        if !full && w > 800 {
+            (px, w, h2) = half(&px, w, h2);
+        }
+        if let Ok(mut s) = SNAPS.lock() {
+            s.retain(|x| x.hwnd != h && unsafe { IsWindow(Some(HWND(x.hwnd as *mut _))).as_bool() });
+            s.insert(0, Snap { hwnd: h, frame, w, h: h2, px, at: Instant::now() });
+            s.truncate(SNAP_KEEP);
+        }
     });
+}
+
+/// Halve a BGRA picture (2×2 average), to keep pictures of windows in the back small.
+fn half(px: &[u8], w: i32, h: i32) -> (Vec<u8>, i32, i32) {
+    let (nw, nh) = (w / 2, h / 2);
+    let mut out = vec![0u8; (nw * nh * 4) as usize];
+    for y in 0..nh as usize {
+        for x in 0..nw as usize {
+            for c in 0..4 {
+                let at = |xx: usize, yy: usize| px[(yy * w as usize + xx) * 4 + c] as u32;
+                let s = at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) + at(2 * x, 2 * y + 1) + at(2 * x + 1, 2 * y + 1);
+                out[(y * nw as usize + x) * 4 + c] = ((s + 2) / 4) as u8;
+            }
+        }
+    }
+    (out, nw, nh)
 }
 
 /// A recent picture of `hwnd`, if it was taken where the window last was.
 fn cached(hwnd: HWND, restored: RECT) -> Option<(Vec<u8>, i32, i32, RECT)> {
-    let mut s = SNAP.lock().ok()?;
-    let snap = s.take().filter(|s| s.hwnd == hwnd.0 as isize && s.at.elapsed().as_secs() < 60)?;
+    let mut s = SNAPS.lock().ok()?;
+    let i = s.iter().position(|x| x.hwnd == hwnd.0 as isize && x.at.elapsed().as_secs() < 60)?;
+    let snap = s.remove(i);
     // The window rect includes invisible borders; the frame sits inside it.
     let near = |a: i32, b: i32| (a - b).abs() <= 16;
     let f = snap.frame;
@@ -498,9 +556,15 @@ fn restored_rect(h: HWND) -> Option<RECT> {
         let mut work = RECT::default();
         let _ = SystemParametersInfoW(SPI_GETWORKAREA, 0, Some(&mut work as *mut _ as *mut _), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0));
         if wp.flags.0 & WPF_RESTORETOMAXIMIZED.0 != 0 {
+            // Maximized: it filled the work area of its own display (not always the primary one).
+            use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+            let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+            if GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
+                return Some(mi.rcWork);
+            }
             return Some(work);
         }
-        // The normal position is in work-area coordinates.
+        // The normal position is in work-area coordinates (of the primary display).
         let r = wp.rcNormalPosition;
         Some(RECT { left: r.left + work.left, top: r.top + work.top, right: r.right + work.left, bottom: r.bottom + work.top })
     }

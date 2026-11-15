@@ -43,6 +43,9 @@ mod ui {
 }
 
 fn main() {
+    // Inherited from an editor's terminal (VS Code sets it), this makes every
+    // Electron app we launch run as plain Node.js and exit at once.
+    std::env::remove_var("ELECTRON_RUN_AS_NODE");
     let args: Vec<String> = std::env::args().skip(1).collect();
     let has = |flag: &str| args.iter().any(|a| a == flag);
     if let Some(i) = args.iter().position(|a| a == "--render-frames") {
