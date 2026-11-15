@@ -23,6 +23,7 @@ Uninstall from **Settings → Apps → Installed apps → WinMacDock**. Uninstal
 - **Dock**: pinned and running apps, magnification, launch bounce, running dots, name labels and auto-hide.
   - Clicking an app that is not in front brings all of its windows forward.
   - Clicking the app in front minimizes all of its windows (the front one with the genie effect).
+  - Shift+click (or right-click → New Window) starts the app again, which opens a new window in most apps.
   - Right-click shows the app's windows, plus Keep in Dock / Remove from Dock and Quit.
 - **Menu bar**: the system menu, the active app's name and a **Window** menu (Minimize, Zoom, Bring All to Front and the list of windows). On the right:
   - other apps' **tray icons**. Click and right-click are passed through to each app.

@@ -1,4 +1,4 @@
-﻿//! Application state, window classes, message loop and command dispatch.
+//! Application state, window classes, message loop and command dispatch.
 
 use std::sync::atomic::{AtomicIsize, AtomicPtr, Ordering};
 use std::time::Instant;
@@ -59,6 +59,19 @@ const TIMER_TRAY: usize = 5;
 const TIMER_DISPLAY: usize = 6;
 /// Refreshes the picture of the window in front (for the minimize effect).
 const TIMER_SNAP: usize = 8;
+const TIMER_SNAP_FG: usize = 9;
+
+/// Milliseconds since the last keyboard or mouse input.
+fn user_idle_ms() -> u32 {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut li = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    unsafe {
+        if !GetLastInputInfo(&mut li).as_bool() {
+            return u32::MAX;
+        }
+        windows::Win32::System::SystemInformation::GetTickCount().wrapping_sub(li.dwTime)
+    }
+}
 const HOTKEY_QUIT: i32 = 1;
 const HOTKEY_SPOTLIGHT: i32 = 2;
 const CLASS: PCWSTR = w!("WinMacDockWindow");
@@ -72,7 +85,10 @@ pub enum Cmd {
     OpenSettings,
     CloseSettings,
     ConfigChanged(Section),
+    /// Start a target (a new window when the app already runs).
     Launch(String),
+    /// Bring the app forward if it runs, otherwise start it.
+    Open(String),
     Pin(String),
     Unpin(String),
     CloseApp(AppKey),
@@ -646,8 +662,12 @@ impl App {
                 let prev_fg = self.cx.tracker.fg;
                 self.cx.tracker.refresh();
                 if self.cx.animate && self.cx.tracker.fg != prev_fg {
-                    // A new window is in front: picture it for its minimize effect.
-                    minfx::prefetch(self.cx.tracker.fg, &[], self.cx.s);
+                    // A new window is in front: picture it for its minimize effect,
+                    // once the switch has settled (a picture makes the app redraw,
+                    // which would stutter its activation).
+                    unsafe {
+                        SetTimer(Some(self.cx.main), TIMER_SNAP_FG, 900, None);
+                    }
                 }
                 taskbar::rehide();
                 if let Some(bar) = &mut self.menubar {
@@ -665,8 +685,22 @@ impl App {
                     t.update(&self.cx);
                 }
             }
+            WM_TIMER if wp.0 == TIMER_SNAP_FG => {
+                unsafe {
+                    let _ = KillTimer(Some(self.cx.main), TIMER_SNAP_FG);
+                }
+                if user_idle_ms() < 300 {
+                    // Still clicking or typing: try again a little later.
+                    unsafe {
+                        SetTimer(Some(self.cx.main), TIMER_SNAP_FG, 600, None);
+                    }
+                } else if self.cx.animate {
+                    minfx::prefetch(self.cx.tracker.fg, &[], self.cx.s);
+                }
+            }
             WM_TIMER if wp.0 == TIMER_SNAP => {
-                if self.cx.animate {
+                // Skipped while the user is busy, so typing never stutters.
+                if self.cx.animate && user_idle_ms() > 1000 {
                     // The window in front, plus other visible windows whose picture is old.
                     let others: Vec<HWND> = self.cx.tracker.wins.iter().map(|w| w.hwnd).take(8).collect();
                     minfx::prefetch(self.cx.tracker.fg, &others, self.cx.s);
@@ -852,7 +886,9 @@ impl App {
             Cmd::OpenSettings => self.settings.show(&mut self.cx),
             Cmd::CloseSettings => self.settings.hide(),
             Cmd::ConfigChanged(sec) => self.apply_config(sec),
-            Cmd::Launch(target) => {
+            // Always starts the target: for a running app that usually opens a new window.
+            Cmd::Launch(target) => util::shell_open(&target),
+            Cmd::Open(target) => {
                 // Like macOS: an app that is already running comes forward instead.
                 self.cx.tracker.refresh();
                 let wins = self.cx.tracker.windows_for_launch(&target);

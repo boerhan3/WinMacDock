@@ -48,6 +48,10 @@ fn main() {
     std::env::remove_var("ELECTRON_RUN_AS_NODE");
     let args: Vec<String> = std::env::args().skip(1).collect();
     let has = |flag: &str| args.iter().any(|a| a == flag);
+    if has("--snap-test") {
+        ui::minfx::snap_test();
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--render-frames") {
         let a = |k: usize| args.get(i + k).cloned().unwrap_or_default();
         let num = |k: usize, d: f32| a(k).parse::<f32>().unwrap_or(d);

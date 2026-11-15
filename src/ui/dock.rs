@@ -633,7 +633,9 @@ impl Dock {
                 // The window list may be a moment old; a closed window can't be activated.
                 cx.tracker.refresh();
                 let wins: Vec<HWND> = cx.tracker.windows_of(&it.key).map(|w| w.hwnd).collect();
-                if wins.is_empty() {
+                let shift = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x10) } < 0;
+                if wins.is_empty() || shift {
+                    // Not running, or Shift+click: start it (a new window if it runs).
                     shell_open(&it.launch);
                     if cx.animate {
                         it.bounce = Some((Instant::now(), None));

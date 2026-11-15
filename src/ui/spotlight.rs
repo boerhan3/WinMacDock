@@ -186,7 +186,7 @@ impl Spotlight {
 
     fn launch(&mut self, cx: &mut Ctx) {
         if let Some(&ai) = self.results.get(self.selected) {
-            cx.cmds.push(Cmd::Launch(cx.apps[ai].launch.clone()));
+            cx.cmds.push(Cmd::Open(cx.apps[ai].launch.clone()));
             self.close(cx);
         }
     }

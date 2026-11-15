@@ -474,7 +474,7 @@ impl Launchpad {
                 self.toggle_app(cx, &launch);
             }
             Some(Entry::App(ai)) => {
-                cx.cmds.push(Cmd::Launch(cx.apps[ai].launch.clone()));
+                cx.cmds.push(Cmd::Open(cx.apps[ai].launch.clone()));
                 self.close(cx);
             }
             Some(Entry::Folder(id)) => self.open_folder(cx, id),
@@ -705,7 +705,7 @@ impl Launchpad {
             self.finish_rename(cx);
             if let Some(j) = fl.hit(x, y, n) {
                 if let Some(&ai) = self.folder_apps.get(&fid).and_then(|v| v.get(j)) {
-                    cx.cmds.push(Cmd::Launch(cx.apps[ai].launch.clone()));
+                    cx.cmds.push(Cmd::Open(cx.apps[ai].launch.clone()));
                     self.close(cx);
                 }
             } else if !fl.contains(x, y) {

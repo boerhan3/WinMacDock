@@ -390,7 +390,7 @@ struct Snap {
 /// Pictures kept at most (the one in front at full size, others at half).
 const SNAP_KEEP: usize = 6;
 /// Pictures of windows that are not in front are retaken after this long.
-const SNAP_STALE_SECS: u64 = 15;
+const SNAP_STALE_SECS: u64 = 30;
 
 static SNAPS: std::sync::Mutex<Vec<Snap>> = std::sync::Mutex::new(Vec::new());
 /// Windows waiting to be pictured: (hwnd, full size).
@@ -410,10 +410,9 @@ pub fn prefetch(fg: HWND, others: &[HWND], scale: f32) {
     if usable(fg) {
         jobs.push((fg.0 as isize, true));
     }
-    for &h in others.iter().filter(|&&h| h != fg).take(SNAP_KEEP - 1) {
-        if usable(h) && !fresh(h) {
-            jobs.push((h.0 as isize, false));
-        }
+    // At most one window in the back per call: each picture makes that app redraw.
+    if let Some(&h) = others.iter().filter(|&&h| h != fg).take(SNAP_KEEP - 1).find(|&&h| usable(h) && !fresh(h)) {
+        jobs.push((h.0 as isize, false));
     }
     if jobs.is_empty() {
         return;
@@ -430,6 +429,10 @@ pub fn prefetch(fg: HWND, others: &[HWND], scale: f32) {
         return;
     }
     std::thread::spawn(move || loop {
+        unsafe {
+            use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL};
+            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        }
         let job = WANT.lock().ok().and_then(|mut w| if w.is_empty() { None } else { Some(w.remove(0)) });
         let Some((h, full)) = job else {
             SNAP_BUSY.store(false, Ordering::Release);
@@ -472,19 +475,54 @@ fn half(px: &[u8], w: i32, h: i32) -> (Vec<u8>, i32, i32) {
     (out, nw, nh)
 }
 
+/// `--snap-test`: picture every visible app window once and log whether it
+/// worked, how long it took and how its frame compares with where Windows
+/// would say it was after minimizing. Changes nothing on screen.
+pub fn snap_test() {
+    let mut t = crate::win::tracker::Tracker::new();
+    t.refresh();
+    for w in &t.wins {
+        let h = w.hwnd;
+        if unsafe { IsIconic(h).as_bool() } {
+            continue;
+        }
+        let title: String = crate::win::tracker::title(h).chars().take(40).collect();
+        let at = Instant::now();
+        let r = capture_pixels(h, 10.0);
+        let ms = at.elapsed().as_secs_f32() * 1000.0;
+        let line = match (r, restored_rect(h)) {
+            (Some((_, w, hh, f)), Some(rr)) => format!(
+                "snap-test {ms:6.1} ms  ok {w}x{hh}  frame {},{},{},{}  restored {},{},{},{}  [{title}]",
+                f.left, f.top, f.right, f.bottom, rr.left, rr.top, rr.right, rr.bottom
+            ),
+            (Some(_), None) => format!("snap-test {ms:6.1} ms  ok, no placement  [{title}]"),
+            (None, _) => format!("snap-test {ms:6.1} ms  FAILED (black or error)  [{title}]"),
+        };
+        crate::util::log(&line);
+    }
+}
+
 /// A recent picture of `hwnd`, if it was taken where the window last was.
 fn cached(hwnd: HWND, restored: RECT) -> Option<(Vec<u8>, i32, i32, RECT)> {
     let mut s = SNAPS.lock().ok()?;
-    let i = s.iter().position(|x| x.hwnd == hwnd.0 as isize && x.at.elapsed().as_secs() < 60)?;
+    let Some(i) = s.iter().position(|x| x.hwnd == hwnd.0 as isize && x.at.elapsed().as_secs() < 60) else {
+        crate::util::log(&format!("minimize effect: no recent picture (have {} pictures)", s.len()));
+        return None;
+    };
     let snap = s.remove(i);
+    let f = snap.frame;
+    crate::util::log(&format!(
+        "minimize effect: picture {}s old, frame {},{},{},{} vs restored {},{},{},{}",
+        snap.at.elapsed().as_secs(), f.left, f.top, f.right, f.bottom, restored.left, restored.top, restored.right, restored.bottom
+    ));
     // The window rect includes invisible borders; the frame sits inside it.
+    // The window rect includes invisible borders; the frame sits inside it.
+    // If the window moved or resized since (or the work area changed), the
+    // picture is still right; it is just stretched to where the window was.
     let near = |a: i32, b: i32| (a - b).abs() <= 16;
     let f = snap.frame;
-    if near(f.left, restored.left) && near(f.top, restored.top) && near(f.right, restored.right) && near(f.bottom, restored.bottom) {
-        Some((snap.px, snap.w, snap.h, snap.frame))
-    } else {
-        None
-    }
+    let same = near(f.left, restored.left) && near(f.top, restored.top) && near(f.right, restored.right) && near(f.bottom, restored.bottom);
+    Some((snap.px, snap.w, snap.h, if same { f } else { restored }))
 }
 
 /// The window's picture (its visible frame, with rounded corners of
