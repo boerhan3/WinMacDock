@@ -92,3 +92,7 @@ The Dock and Launchpad animate at 60 fps on that machine.
 - With several displays, every display gets the menu bar and live wallpaper. The Dock sits on one display and moves to another when you push the pointer against that display's bottom edge (like macOS). Launchpad and Spotlight open on the main display. A secondary display with a different scale uses the main display's scale.
 - Another program that also hosts tray icons can hold that role first, for example another dock app. In that case WinMacDock leaves it alone and shows no tray icons.
 - WinMacDock uses no Apple artwork. App icons come from Windows.
+
+## License
+
+[MIT No Attribution](LICENSE). Use, change, rebrand (white-label) and sell it freely, with no need to credit this project.
