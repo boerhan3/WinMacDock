@@ -196,11 +196,10 @@ impl Traffic {
             let idx = match self.overlays.iter().position(|o| o.target == h) {
                 Some(i) => i,
                 None => {
+                    // Not owned by the app's window: an owner in another process
+                    // merges the two threads' input queues, which broke Alt+Tab
+                    // and switching windows. `restack` keeps it just above instead.
                     let hwnd = app::create_window(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP, None);
-                    unsafe {
-                        // Owned windows always stay just above their owner.
-                        SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, h.0 as isize);
-                    }
                     self.overlays.push(Overlay { target: h, hwnd, surf: None, placed: (0, 0, 0, 0), bg: (0.5, 0.5, 0.5), active: false, hover: false, tracking: false, dirty: true });
                     self.overlays.len() - 1
                 }
@@ -212,6 +211,7 @@ impl Traffic {
                 ov.dirty = true;
             }
             place(ov, area);
+            restack(ov);
         }
         self.follow(fg);
     }
@@ -412,10 +412,27 @@ fn place(ov: &mut Overlay, a: Area) {
         if placed != ov.placed {
             ov.placed = placed;
             ov.dirty = true;
-            let _ = SetWindowPos(ov.hwnd, Some(HWND_TOP), placed.0, placed.1, placed.2, placed.3, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            let _ = SetWindowPos(ov.hwnd, None, placed.0, placed.1, placed.2, placed.3, SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
         } else if !IsWindowVisible(ov.hwnd).as_bool() {
             let _ = ShowWindow(ov.hwnd, SW_SHOWNOACTIVATE);
         }
+    }
+}
+
+/// Put an overlay directly above its window in the z-order (and nowhere
+/// else), without activating anything.
+fn restack(ov: &Overlay) {
+    unsafe {
+        let above = GetWindow(ov.target, GW_HWNDPREV).unwrap_or_default();
+        // Already right above it.
+        if above == ov.hwnd {
+            return;
+        }
+        // Inserting below a topmost window would make the overlay topmost
+        // too; when the target is the highest normal window, plain top is right.
+        let topmost = !above.is_invalid() && (GetWindowLongW(above, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0) != 0;
+        let after = if above.is_invalid() || topmost { HWND_TOP } else { above };
+        let _ = SetWindowPos(ov.hwnd, Some(after), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     }
 }
 
