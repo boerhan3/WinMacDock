@@ -77,10 +77,10 @@ pub enum Cmd {
     Unpin(String),
     CloseApp(AppKey),
     Minimize(HWND),
+    /// Minimize all of an app's windows: (front window, which gets the effect; all windows).
+    MinimizeAll(HWND, Vec<HWND>),
     Activate(HWND),
     BringAllToFront(AppKey),
-    /// Show the window list of Dock item `n`.
-    DockPreview(usize),
     ToggleDockHiding,
     /// Put an app in Launchpad or take it out.
     ToggleLaunchpad(String),
@@ -885,15 +885,20 @@ impl App {
                 }
                 self.minfx.minimize(&self.cx, hwnd, dest);
             }
+            Cmd::MinimizeAll(front, wins) => {
+                for &h in wins.iter().filter(|&&h| h != front) {
+                    self.minfx.minimize_quietly(h);
+                }
+                let dest = self.cx.tracker.wins.iter().find(|w| w.hwnd == front).and_then(|w| self.dock.icon_center(&self.cx, &w.key));
+                if dest.is_some() {
+                    self.dock.peek();
+                }
+                self.minfx.minimize(&self.cx, front, dest);
+            }
             Cmd::Activate(hwnd) => tracker::activate(hwnd),
             Cmd::BringAllToFront(key) => {
                 let wins: Vec<HWND> = self.cx.tracker.windows_of(&key).map(|w| w.hwnd).collect();
                 tracker::bring_all_to_front(&wins);
-            }
-            Cmd::DockPreview(i) => {
-                if let Some((key, anchor)) = self.dock.preview_target(i) {
-                    self.preview.show_now(&mut self.cx, key, anchor);
-                }
             }
             Cmd::ToggleDockHiding => {
                 self.cx.cfg.dock.autohide = !self.cx.cfg.dock.autohide;

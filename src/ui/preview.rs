@@ -138,12 +138,6 @@ impl Preview {
         }
     }
 
-    /// Open right away (clicking an app that has several windows).
-    pub fn show_now(&mut self, cx: &mut Ctx, key: AppKey, anchor: (i32, i32)) {
-        self.pending = None;
-        self.show(cx, key, anchor);
-    }
-
     fn unregister(&mut self) {
         for t in self.thumbs.drain(..) {
             unsafe {

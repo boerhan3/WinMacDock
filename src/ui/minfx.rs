@@ -103,7 +103,8 @@ pub struct MinFx {
     geo: Genie,
     /// What each strip was last set to; unchanged strips are not sent to DWM again.
     last: Vec<(RECT, u8)>,
-    skip: HWND,
+    /// Windows whose coming minimize event is ours (already animated or meant to be quiet).
+    skip: Vec<HWND>,
     start: Instant,
     /// Top-left of the host windows (the virtual screen, which may start below 0).
     origin: (i32, i32),
@@ -112,7 +113,7 @@ pub struct MinFx {
 impl MinFx {
     pub fn new() -> Self {
         let hwnd = app::create_window(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP | WS_EX_TRANSPARENT, None);
-        Self { hwnd, canvas: None, run: Run::None, geo: Genie::default(), last: Vec::new(), skip: HWND::default(), start: Instant::now(), origin: (0, 0) }
+        Self { hwnd, canvas: None, run: Run::None, geo: Genie::default(), last: Vec::new(), skip: Vec::new(), start: Instant::now(), origin: (0, 0) }
     }
 
     /// Minimize `target` ourselves (Dock click, window buttons). The window
@@ -136,8 +137,23 @@ impl MinFx {
                 };
                 if started {
                     // The minimize event that follows is ours; don't animate twice.
-                    self.skip = target;
+                    self.skip.push(target);
                 }
+            }
+            let _ = ShowWindow(target, SW_MINIMIZE);
+        }
+    }
+
+    /// Minimize without an effect (the other windows when an app hides all of
+    /// its windows), and don't let their minimize events cut the running effect.
+    pub fn minimize_quietly(&mut self, target: HWND) {
+        unsafe {
+            if IsIconic(target).as_bool() {
+                return;
+            }
+            self.skip.push(target);
+            if self.skip.len() > 32 {
+                self.skip.remove(0);
             }
             let _ = ShowWindow(target, SW_MINIMIZE);
         }
@@ -146,7 +162,8 @@ impl MinFx {
     /// Some window was minimized by other means (Win+Down, its own button):
     /// play the effect from where it was.
     pub fn minimized(&mut self, cx: &Ctx, target: HWND, dest: Option<(i32, i32)>) {
-        if std::mem::take(&mut self.skip) == target {
+        if let Some(i) = self.skip.iter().position(|&h| h == target) {
+            self.skip.remove(i);
             return;
         }
         let (Some(dest), true) = (dest, cx.animate) else { return };
@@ -439,7 +456,7 @@ pub fn prefetch(fg: HWND, others: &[HWND], scale: f32) {
     });
 }
 
-/// Halve a BGRA picture (2×2 average), to keep pictures of windows in the back small.
+/// Halve a BGRA picture (2Ã—2 average), to keep pictures of windows in the back small.
 fn half(px: &[u8], w: i32, h: i32) -> (Vec<u8>, i32, i32) {
     let (nw, nh) = (w / 2, h / 2);
     let mut out = vec![0u8; (nw * nh * 4) as usize];

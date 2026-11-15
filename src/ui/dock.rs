@@ -645,11 +645,10 @@ impl Dock {
                     if !front_is_ours {
                         // Like macOS: the app comes forward with all of its windows.
                         tracker::bring_all_to_front(&wins);
-                    } else if wins.len() == 1 {
-                        cx.cmds.push(Cmd::Minimize(fg));
                     } else {
-                        // Several windows: show their live previews.
-                        cx.cmds.push(Cmd::DockPreview(i));
+                        // The app is in front: hide all of its windows (the
+                        // front one with the genie). Previews show on hover.
+                        cx.cmds.push(Cmd::MinimizeAll(fg, wins));
                     }
                 }
                 self.dirty = true;
